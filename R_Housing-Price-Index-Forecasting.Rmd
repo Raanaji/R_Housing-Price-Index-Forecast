@@ -1,0 +1,307 @@
+---
+title: "R_Housing-Price-Index-Forecasting"
+author: "Multiple"
+date: "3/23/2020"
+output: pdf_document
+---
+
+
+# Introduction
+In our analysis, we will study the data set from JP Morgan, S&P500, and the National Home Price Index (NHPI). For the first two data sets, we will do some basic arithmetic calculations and implement a two-variable regression as well. The latter then will be compared to a similar calculation done using MS Excel. With the NHPI dataset we will forecast it using an ARMA model, plot the results and try to find any irregularities in its trend. We will then attempt to smoothen the time-series process. This will make it easier to decompose the process and analyze for cycles, trends, and seasonality. This process will be tested for stationarity using the Augmented Dickey-Fuller (ADF) Test. Depending on whether the null hypothesis for the test is rejected or not rejected, we will proceed. If the null hypothesis is not rejected and the process shows non-stationarity, we will model the process as an ARIMA non-stationary model. Then we will conduct the ADF test on this ARIMA process. After a successful ADF test about the stationarity of this model, the Auto Correlation Function (ACF) and the Partial Auto Correlation Function (PACF) will be implemented to determine the values of the order of the autoregressive model (p), and the order of the moving average model (q). Finally we will forecast the NPHI dataset and, use the ACF and the PACF for examining model residuals.
+
+For project reference purposes, we will be using Tsay(2015)[1] for theory and Ivo Dinov's (2020)[4] online notes for coding.
+
+# Section I: Basic Statistics
+## Calculation in R
+
+### We have downloaded JP Morgan stock historical prices from Yahoo Finance with the following characteristics:
+1. Period: February 1, 2018 – December 30, 2018
+2. Frequency: Daily
+3. Price considered in the analysis: Close price adjusted for dividends and splits
+
+###Using this data and R as the programming language, calculate the following:
+1. Average stock value
+2. Stock volatility
+3. Daily stock return
+
+```{r}
+JPMorganData <- read.csv("JPM.csv",sep=',')
+JPMorganAdjClose = JPMorganData[["Adj.Close"]]
+averageJPMReturns = mean(JPMorganAdjClose)
+rows = length(JPMorganAdjClose)
+JPMReturns <- log(JPMorganAdjClose[2:rows]/JPMorganAdjClose[1:(rows-1)])
+stdDev = sd(JPMReturns)
+nBusinessDays = 252
+volatility = stdDev * sqrt(nBusinessDays)
+cat("Average stock value = ", averageJPMReturns, "\n")
+cat("Stock volatility = ", volatility, "\n")
+cat("Daily JPMReturns\n")
+print(JPMReturns)
+```
+
+# Section II: Linear Regression
+## Implementing a two-variable regression in R, based on the following
+1. Explained variable: JP Morgan stock (adjusted close price)
+2. Explanatory variable: S&P500
+3. Period: February 1, 2018 – December 30, 2018
+4. Frequency: Daily
+
+```{r}
+
+SP500data <- read.csv("S&P500.csv")
+lm(JPMorganAdjClose ~SP500data$Adj.Close)
+```
+
+# Section III: Univariate Time Series
+## Forecast using the ARMA model and testing using Augmented Dickey-Fuller test.
+
+### We Download the following data:
+1. Datasource:https://fred.stlouisfed.org/series/CSUSHPISA 
+2. Period considered in theanalysis: January 1987 – latest data 
+3. Frequency: monthly data
+
+With this data, do the following using R:
+### 1.Forecast S&P/Case-Shiller U.S. National Home Price Index using an ARMA model.
+
+The first thing we do is plot the series. We start by loading the housing price dataset.
+
+```{r}
+CSUSHPISA_Data <- read.csv("CSUSHPISA.csv")
+
+library(forecast)
+library(xts)
+library(tidyverse)
+library(stats)
+library(tseries)
+
+CSUSHPISA_Data$DATE = as.Date(CSUSHPISA_Data$DATE)
+# generally plotting home price index
+ggplot(CSUSHPISA_Data, aes(DATE, CSUSHPISA)) + geom_line() + scale_x_date('month')  + ylab("Monthly CSUSHPISA") +
+            xlab("")
+
+summary(CSUSHPISA_Data) 
+
+```
+
+
+```{r}
+plot(forecast(CSUSHPISA_Data$CSUSHPISA))
+
+df = as.data.frame(forecast(CSUSHPISA_Data$CSUSHPISA)$residuals)
+ggplot(df, aes(index(df))) + 
+    geom_point(aes(y = df$x, color="predicted"))
+
+tsdisplay(residuals(forecast(CSUSHPISA_Data$CSUSHPISA)), main=' 
+          Model Residuals')
+
+```
+
+
+### 2.Implementing the Augmented Dickey-Fuller Test for checking the existence of a unitroot in Case-Shiller Index series
+
+We conduct a preliminary ADF test on the home price series.
+```{r}
+#conducting an ADF test
+adf_test <- adf.test(CSUSHPISA_Data$CSUSHPISA,alternative = 'stationary')
+print(adf_test)
+```
+First let us have a brief primer on the Augmented Dickey-Fuller (ADF) test. ADF is a test for the stationarity of a given series (a unit-root test for stationarity). A time-series with a unit root exhibits unpredictable pattern. The null hypothesis is that there is a unit root, i.e. a random walk with a drift (suggesting nonstationarity). The alternative hypothesis varies with the model being tested.
+
+Conducting a preleminary ADF test on the home price index datasets, the p-value is clearly greater than 0.05 (which is to what we have set our alpha level). Hence, we can conclude that the price series is nonstationary and a unit root exists. Thus we should use Integrated ARMA model i.e. ARIMA `(p,d,q)` model, and we cannot apply an ARMA`(p,q)` model to this series. However, we can use the `tsclean()` function to identify and replace outliers. This is done using series smoothing and decomposition. Doing so will input missing values in the series and replace outliers. We do so to successfully be able to run the series through an ADF test and show stationarity.  
+ts() command to create a time series object to pass to tsclean().
+
+
+```{r}
+# create time series object using ts() to pass on to tsclean()
+CSUSHPISA_ts = ts(CSUSHPISA_Data[, c('CSUSHPISA')])
+
+CSUSHPISA_Data$clean_CSUSHPISA = tsclean(CSUSHPISA_ts) 
+
+CSUSHPISA_Data <- CSUSHPISA_Data[,c(1,3)]
+
+ggplot() +  geom_line(data = CSUSHPISA_Data, aes(x = DATE, y = clean_CSUSHPISA)) +
+  ylab('Monthly Cleaned CSUSHPISA')
+```
+
+Let us deconstruct the above series to analyze its seasonaliy and trend. 
+
+```{r}
+cleanedTimeSeries = ts(CSUSHPISA_Data$clean_CSUSHPISA ,start = c(1987,1),end = 
+                c(2019,12), frequency=12)
+```
+```{r}
+# De-seasonalize the series
+decomp = stl(cleanedTimeSeries, s.window="periodic")
+deseasonal_CleanedTS <- forecast::seasadj(decomp)
+plot(deseasonal_CleanedTS, main = "Deseasonalized Plot")
+plot(decomp, main="Decomposed Plot")
+```
+
+
+Conducting ACF and PACF test on the cleaned price series
+
+```{r}
+par(mfrow = c(1,2))
+acf(cleanedTimeSeries, main = "ACF Cleaned Time Series")
+pacf(cleanedTimeSeries, main = "PACF Cleaned Time Series")
+```
+
+We perform a simple ADF test on the cleaned home price index.
+
+```{r}
+adf.test(cleanedTimeSeries, alternative = "stationary")
+```
+Taking the alpha level as 0.05, from the above results we can see that the p-value is less than 0.05, but it is very close. With alpha level of 0.01 we would not be able to reject null hypothesis of unit root. We will keep using the cleaned time series, but will using the method of differencing.Referring to the method of differencing, as suggested in R. S. Tsay(2015)[1], we will try to transform this nonstationary series into a stationary one by considering its change series. The change series follows a stationary and an invertible ARMA(p,q) model.
+
+### 3.Implement an ARIMA(p,d,q) model. Determine p, d, q using Information Criterion or Box-Jenkins methodology. Comment the results
+
+It has been determined that the home price index series is nonstationary, so we apply differencing and test again.
+
+```{r} 
+totalRows = nrow(CSUSHPISA_Data) # total no. of rows
+names(CSUSHPISA_Data) <- c('DATE','CSUSHPISA')
+
+diff1 <- CSUSHPISA_Data[2:totalRows,"CSUSHPISA"] - CSUSHPISA_Data[1:(totalRows-1),"CSUSHPISA"]
+#plot first difference
+plot(diff1)
+#ADF test for stationarity of first difference n (suggesting nonstationarity)
+adf.test(diff1,alternative = "stationary")
+```
+
+The p-value from the ADF test is greater than 0.05, hence we cannot reject the null hypothesis. Thus, the test on first difference indicated that the series is  non-stationary.
+
+```{r}
+#repeat differencing procedure for second difference 
+lengthOfDiff1<-length(diff1)
+#applying the differencing method as suggested by R.S.Tsay(2015)
+diff2<-diff1[2:lengthOfDiff1]-diff1[1:lengthOfDiff1-1]
+plot(diff2)
+
+par(mfrow = c(2,1))
+plot.ts(diff1, main="1st differencing")
+plot.ts(diff2, main="2nd differencing")
+```
+
+
+```{r}
+#perform an ADF test on the second difference
+adf.test(diff2)
+```
+
+The p-value from the ADF test is less than our alpha level of 0.05. Thus, we reject the null hypothesis and conclude that with second-order differencing the  process is stationary.
+We use the Auto Correlation Function (ACF) `acf` and the Partial Auto Correlation Function (PACF) `pacf` to determine `p` and `q`(`d` is 2 because we had to difference twice to make  it stationary).
+
+```{r}
+#par(mfrow = c(1,2))
+acf(diff2, lag.max = 100, main = "ACF")
+pacf(diff2, main = "PACF")
+```
+
+Since we have applied differencing twice, `d = 2`. The `auto.arima()` function can help us to find the optimal estimates for the remaining  parameters of the ARIMA model, `p` and `q`.
+
+```{r}
+auto.arima(CSUSHPISA_Data$CSUSHPISA)
+```
+
+As the plot shown, there is strike mostly in first 12 lags. As the plot above shown, acf pattern showing expoential decays with damped sine wave pattern. Therefore, it can be inferred that ARIMA(12,2,0) model fits the data well. Now we try with: 
+
+```{r}
+p <- 12
+d <- 2
+q <- 0
+ARIMA_Model <- arima(CSUSHPISA_Data$CSUSHPISA, order=c(p,d,q), method = "ML")
+summary(ARIMA_Model)
+tsdiag(ARIMA_Model)
+coef(ARIMA_Model)
+```
+From the summary, we can see $\sigma^2$ (variance) and aic are quite small, which is a good sign suggesting the model fits to data. To check if the residual of ARIMA(12,2,0) model is pure white noise.
+```{r}
+par(mfrow = c(1,2))
+acf(ARIMA_Model$residuals, main = "ACF ARIMA Residuals")
+pacf(ARIMA_Model$residuals, main = "PACF ARIMA Residuals")
+```
+
+As shown in partial autocorrelation graph, we do not see significant strike except lag 18. So, we can perform Box-Pierce test on this lag.
+
+```{r}
+Box.test(ARIMA_Model$residuals, lag = 18)
+
+```
+Its p-value is very high, so we fail to reject null hypothesis that errors are white noise. Therefore, the residuals are proved to be white noise.
+
+
+### 4.Forecast the future evolution of Case-Shiller Index using the ARMA model. Test model using in-sample forecasts
+
+First we will forecast the evolution of Case-Shiller Index using. We can specify forecast horizon h periods ahead for predictions to be made, and use the fitted model to generate those predictions
+```{r}
+dataLength = length(CSUSHPISA_Data$CSUSHPISA)
+ARIMA_PredictModel <- arima(window(CSUSHPISA_Data$CSUSHPISA,1,dataLength-73), 
+                      order=c(p,d,q), method = "ML")
+
+
+Forecast <- forecast(ARIMA_PredictModel, h=30, level=c(99.5))
+plot(Forecast)
+
+ARIMA_forecast <- predict(ARIMA_PredictModel, n.ahead=72, se.fit=TRUE)
+plot(CSUSHPISA_Data$CSUSHPISA) + lines(ARIMA_forecast$pred, col="red") + lines(ARIMA_forecast$pred+1*ARIMA_forecast$se, col="red", 
+      lty="dashed") + lines(ARIMA_forecast$pred-1*ARIMA_forecast$se, col="red", 
+      lty="dashed")
+
+df = as.data.frame(ARIMA_PredictModel$residuals)
+ggplot(df, aes(index(df))) + 
+    geom_point(aes(y = df$x, color="predicted"))
+
+```
+The model prediction scatters after period 200 and does not converge.
+
+To evaluate the model, we can start by examining ACF and PACF plots for model residuals. If model order parameters and structure are correctly specified, we would expect no significant autocorrelations present.
+
+```{r}
+tsdisplay(residuals(ARIMA_PredictModel), main='Model Residuals')
+```
+As we see in the graph, most of the test data are within one standard deviation from our prediction suggesting that ARIMA(12,2,0) is accurate.
+
+```{r}
+
+displayForecastErrors <- function(forecastErrors)
+  {
+     # Generate a histogram of the Forecast Errors
+     binsize <- IQR(forecastErrors)/4
+     sd   <- sd(forecastErrors)
+     min  <- min(forecastErrors) - sd
+     max  <- max(forecastErrors) + sd
+     
+     # Generate 5K normal(0,sd) RVs 
+     norm <- rnorm(5000, mean=0, sd=sd)
+     min2 <- min(norm)
+     max2 <- max(norm)
+     if (min2 < min) { min <- min2 }
+     if (max2 > max) { max <- max2 }
+     
+     # Plot histogram of the forecast errors
+     bins <- seq(min, max, binsize)
+     hist(forecastErrors, col="red", freq=FALSE, breaks=bins)
+     
+     myHist <- hist(norm, plot=FALSE, breaks=bins)
+     
+     # Overlay the Blue normal curve on top of forecastErrors histogram
+     points(myHist$mids, myHist$density, type="l", col="blue", lwd=2)
+}
+
+displayForecastErrors(residuals(ARIMA_PredictModel))
+
+```
+
+
+
+# Types of exogenous variables that can improve forecasts.
+Our aim throughout the exercise was to determine how does the aggregate level of housing prices change. We need to include some exogenous variables which help us in determining the changes. Though there are a number of variables which are important, we choose the the lending rates set by the federal reserves, and the LIBOR (London Inter-bank Offered Rate). The reason for this is these rates were important for determining the risks involved in the sub-prime mortgage market (during the 2007-10) crisis. The defaults started skyrocketing after the Federal Reserve increased the lending rates, and since the adjustable mortgage rates were higher than that of LIBOR (and LIBOR itself was influenced by the Federal rates), the adjustable rates on mortgages increased beyond what the home-owners could afford. Thus, leading to the crisis and hence the reason for our preference with respect to the context of our question.
+
+
+# References
+
+1. Ruey S. Tsay. (2015). Analysis of Financial Time Series (3rd Edition). Wiley Series in Probability and Statistics.
+2. Robert Nau. Statistical forecasting: notes on regression and time series analysis, ARIMA models for time series forecasting. Fuqua School of Business Duke University. Available at: http://people.duke.edu/~rnau/411home.htm
+3. J. Berglund. (2007). Determinants and Forecasting of House Prices. Department of Economics, Uppsala University. Available at: https://pdfs.semanticscholar.org/8dbe/ef3c862ef9d4ba2ff6281d149aa563921e9f.pdf
+4. Ivo Dinov. (2020). Data Science and Predictive Analytics (UMich HS650), Bilongitudnal Analysis. University of Michigan, Statistics Online Computational Resource (SOCR). Available at: http://www.socr.umich.edu/people/dinov/courses/DSPA_notes/18_BigLongitudinalDataAnalysis.html
+5. R. J. Hyndman. (2018). Forecasting: Principles and Practice. Monash University. Available at: https://otexts.com/fpp2/
